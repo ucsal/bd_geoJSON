@@ -1,73 +1,149 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const shapefile = require('shapefile');
-const csvtojson = require('csvtojson');
 const fs = require('fs');
-
+const multer = require('multer');
+const path = require('path');
+const { Pool } = require('pg');
+const cors = require('cors');
 const app = express();
+const { v4: uuidv4 } = require('uuid');
+
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
+app.use(cors());
+app.use(express.static('public'));
 
-// Função para converter shapefile para GeoJSON
-async function shapefileToGeoJSON(shapefilePath) {
-    const geoJSONFeatures = [];
-    const geoJSON = {
-        type: "FeatureCollection",
-        features: []
-    };
-
-    const data = await shapefile.open(shapefilePath);
-    await data.read();
-    while (!data.done) {
-        const feature = await data.read();
-        geoJSONFeatures.push({
-            type: "Feature",
-            geometry: feature.geometry,
-            properties: feature.properties
-        });
+// Configuração do multer para salvar arquivos no diretório 'temp'
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, 'temp/');
+    },
+    filename: function (req, file, cb) {
+        cb(null, Date.now() + path.extname(file.originalname)); // Adiciona um timestamp ao nome do arquivo para garantir unicidade
     }
-    geoJSON.features = geoJSONFeatures;
-    return geoJSON;
+});
+
+const upload = multer({ storage: storage });
+
+// Configuração do PostgreSQL
+const pool = new Pool({
+    user: 'postgres',
+    host: 'localhost',
+    database: 'arnaldo',
+    password: '1234',
+    port: 5432,
+});
+
+// Função de conversão de planilha para GeoJSON
+async function planilhaToGeoJSON(planilhaPath, planilhaData) {
+
+
+
+    // insert('json',{
+    //     name: planilhaPath
+    // });
 }
 
-
-async function planilhaToGeoJSON(planilhaPath) {
-    const jsonArray = await csvtojson().fromFile(planilhaPath);
-    const geoJSONFeatures = jsonArray.map(item => ({
-        type: "Feature",
-        geometry: {
-            type: "Point",
-            coordinates: [parseFloat(item.longitude), parseFloat(item.latitude)] // Assumindo que as colunas são latitude e longitude
-        },
-        properties: item
-    }));
-
-    return {
-        type: "FeatureCollection",
-        features: geoJSONFeatures
-    };
-}
-app.post('/enviar', async (req, res) => {
+// Endpoint para upload de arquivos
+app.post('/enviar', upload.single('planilha'), async (req, res) => {
     try {
-        const shapefile = req.body.shapefile;
-        const planilha = req.body.planilha;
 
-        const shapefilePath = 'temp/shapefile.shp';
-        const planilhaPath = 'temp/planilha.csv';
+        console.log(req);
 
-        fs.writeFileSync(shapefilePath, shapefile, 'base64');
-        fs.writeFileSync(planilhaPath, planilha, 'base64');
 
-        const shapefileGeoJSON = await shapefileToGeoJSON(shapefilePath);
-        const planilhaGeoJSON = await planilhaToGeoJSON(planilhaPath);
+        // Extrair o nome do arquivo da requisição
+        // const planilhaNome = req.file.originalname;
 
-        res.status(200).json({ shapefile: shapefileGeoJSON, planilha: planilhaGeoJSON });
+        // // Ler os dados do arquivo CSV
+        // const planilhaData = req.file.buffer.toString('utf-8');
+
+        // // Converter o CSV para GeoJSON
+        // const planilhaGeoJSON = await planilhaToGeoJSON(planilhaNome, planilhaData);
+
+        // // Enviar a resposta com o GeoJSON
+        // res.status(200).json({ planilha: planilhaGeoJSON });
     } catch (error) {
+        // Lidar com erros
         console.error('Erro ao converter para GeoJSON:', error);
         res.status(500).json({ error: 'Erro ao converter para GeoJSON' });
     }
 });
 
-app.listen(3000, () => {
-    console.log('Servidor rodando na porta 3000');
+
+// Endpoint para obter dados
+app.get('/dados', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT id, name FROM json');
+        res.status(200).json(result.rows);
+    } catch (error) {
+        console.error('Erro ao obter dados:', error);
+        res.status(500).json({ error: 'Erro ao obter dados' });
+    }
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Servidor rodando na porta ${PORT}`);
+});
+
+
+
+async function insertoGeoJSON(name, type, json) {
+    const json_id = insert('json', {
+        name: name,
+        columns: json[0].keys.length,
+        rows: json.length,
+        type: type,
+        normalized: false,
+        created_at: new Date().getTime()
+
+    });
+
+    let ks = {};
+
+    json[0].keys.forEach(el => {
+        ks[el] = insert('keys', {
+            json_id: json_id,
+            name: el,
+            nullable: true,
+            type: "",
+        });
+    });
+
+    json.array.forEach(element, i => {
+        let row = insert('rows', {
+            position: i
+        });
+        Object.entries(element).forEach(([key, value]) => {
+            let row = insert('value', {
+                keys_id: ks[key],
+                rows_id: row,
+                value: value
+            });
+        });
+    });
+}
+
+
+async function insert(tableName, data) {
+    data.id = uuidv4();
+    const client = new Client(CliData);
+
+    await client.connect();
+
+    const columns = Object.keys(data).join(', ');
+    const values = Object.values(data);
+    const placeholders = values.map((_, index) => `$${index + 1}`).join(', ');
+
+    const query = `INSERT INTO ${tableName} (${columns}) VALUES (${placeholders}) RETURNING *`;
+
+    try {
+        const res = await client.query(query, values);
+        console.log('Inserted row:', res.rows[0]);
+    } catch (err) {
+        console.error('Error inserting data:', err);
+    } finally {
+        await client.end();
+    }
+    return data.id;
+}
