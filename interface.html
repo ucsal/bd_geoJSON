@@ -13,7 +13,7 @@
 
     <form id="upload_form" enctype="multipart/form-data">
         <!-- <input type="file" name="shapefile" id="shapefile_input"> -->
-        <input type="file" name="planilha" id="planilha_input">
+        <input type="file" name="file" id="planilha_input">
         <button type="submit">Salvar para GeoJSON</button>
     </form>
 
@@ -64,7 +64,7 @@
 
             var formData = new FormData();
             var planilhaFile = $('#planilha_input')[0].files[0];
-            formData.append('planilha', planilhaFile);
+            formData.append('file', planilhaFile);
 
             $.ajax({
                 type: 'POST',

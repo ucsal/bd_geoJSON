@@ -1,7 +1,8 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const fs = require('fs');
+const csvtojson = require('csvtojson');
 const multer = require('multer');
+const multerConfig = require('./config/multer');
 const path = require('path');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -23,7 +24,6 @@ const storage = multer.diskStorage({
     }
 });
 
-const upload = multer({ storage: storage });
 
 // Configuração do PostgreSQL
 const pool = new Pool({
@@ -34,36 +34,50 @@ const pool = new Pool({
     port: 5432,
 });
 
-// Função de conversão de planilha para GeoJSON
-async function planilhaToGeoJSON(planilhaPath, planilhaData) {
 
+async function csvToGeoJSON(file) {
+    csvtojson()
+    .fromFile(file.path)
+    .then((jsonArrayObj) => {
+        const features = jsonArrayObj.map((item) => {
+            return {
+                type: 'Feature',
+                geometry: {
+                    type: 'Point',
+                    coordinates: [parseFloat(item.longitude), parseFloat(item.latitude)],
+                },
+                properties: item, // Adicione mais campos conforme necessário
+            };
+        });
 
+        const geoJsonObj = {
+            type: 'FeatureCollection',
+            features: features,
+        };
+        insertGeoJSON(file.originalname, 1, geoJsonObj);
 
-    // insert('json',{
-    //     name: planilhaPath
-    // });
+    })
+    .catch((err) => {
+        console.error('Erro ao converter CSV para GeoJSON:', err);
+    });
 }
 
+async function shpToGeoJSON(file) {
+
+}
+
+
+
 // Endpoint para upload de arquivos
-app.post('/enviar', upload.single('planilha'), async (req, res) => {
+app.post('/enviar', multer(multerConfig).single('file'), async (req, res) => {
     try {
 
-        console.log(req);
+        console.log(req.file);
 
+        if(req.file.mimetype == 'text/csv') csvToGeoJSON(req.file)
+        else shpToGeoJSON(req.file)
 
-        // Extrair o nome do arquivo da requisição
-        // const planilhaNome = req.file.originalname;
-
-        // // Ler os dados do arquivo CSV
-        // const planilhaData = req.file.buffer.toString('utf-8');
-
-        // // Converter o CSV para GeoJSON
-        // const planilhaGeoJSON = await planilhaToGeoJSON(planilhaNome, planilhaData);
-
-        // // Enviar a resposta com o GeoJSON
-        // res.status(200).json({ planilha: planilhaGeoJSON });
     } catch (error) {
-        // Lidar com erros
         console.error('Erro ao converter para GeoJSON:', error);
         res.status(500).json({ error: 'Erro ao converter para GeoJSON' });
     }
@@ -73,8 +87,10 @@ app.post('/enviar', upload.single('planilha'), async (req, res) => {
 // Endpoint para obter dados
 app.get('/dados', async (req, res) => {
     try {
+        // await pool.connect();
         const result = await pool.query('SELECT id, name FROM json');
         res.status(200).json(result.rows);
+        // await pool.end();
     } catch (error) {
         console.error('Erro ao obter dados:', error);
         res.status(500).json({ error: 'Erro ao obter dados' });
@@ -86,50 +102,66 @@ app.listen(PORT, () => {
     console.log(`Servidor rodando na porta ${PORT}`);
 });
 
+async function insertGeoJSON(name, type, json) {
 
+    try {
+        // Inicie a transação
+        await pool.query('BEGIN');
 
-async function insertoGeoJSON(name, type, json) {
-    const json_id = insert('json', {
-        name: name,
-        columns: json[0].keys.length,
-        rows: json.length,
-        type: type,
-        normalized: false,
-        created_at: new Date().getTime()
-
-    });
-
-    let ks = {};
-
-    json[0].keys.forEach(el => {
-        ks[el] = insert('keys', {
-            json_id: json_id,
-            name: el,
-            nullable: true,
-            type: "",
+        // Inserir informações básicas sobre o GeoJSON
+        const json_id = await insert('json', {
+            id: uuidv4(),
+            name: name,
+            columns: json.features[0].properties ? Object.keys(json.features[0].properties).length : 0,
+            rows: json.features.length,
+            type: type,
+            normalized: false,
+            created_at: new Date().toISOString()
         });
-    });
 
-    json.array.forEach(element, i => {
-        let row = insert('rows', {
-            position: i
-        });
-        Object.entries(element).forEach(([key, value]) => {
-            let row = insert('value', {
-                keys_id: ks[key],
-                rows_id: row,
-                value: value
+        // Inserir informações sobre as chaves (keys)
+        let ks = {};
+        if (json.features[0].properties) {
+            Object.keys(json.features[0].properties).forEach(el => {
+                ks[el] = insert('keys', {
+                    id: uuidv4(),
+                    json_id: json_id,
+                    name: el,
+                    nullable: true,
+                    type: "",
+                });
             });
-        });
-    });
+        }
+        let row ;
+        // Inserir informações sobre as linhas (rows) e os valores (values)
+        for (let i = 0; i < json.features.length; i++) {
+            row = await insert('rows', {
+                id: uuidv4(),
+                position: i
+            });
+
+            if (json.features[i].properties) {
+                Object.entries(json.features[i].properties).forEach(([key, value]) => {
+                    insert('value', {
+                        id: uuidv4(),
+                        keys_id: ks[key],
+                        rows_id: row,
+                        value: value
+                    });
+                });
+            }
+        }
+
+        // Finalize a transação (efetue o commit)
+        await pool.query('COMMIT');
+    } catch (err) {
+        // Em caso de erro, faça o rollback da transação
+        await pool.query('ROLLBACK');
+        console.error('Error inserting GeoJSON:', err);
+    }
 }
 
-
 async function insert(tableName, data) {
-    data.id = uuidv4();
-    const client = new Client(CliData);
-
-    await client.connect();
 
     const columns = Object.keys(data).join(', ');
     const values = Object.values(data);
@@ -138,12 +170,10 @@ async function insert(tableName, data) {
     const query = `INSERT INTO ${tableName} (${columns}) VALUES (${placeholders}) RETURNING *`;
 
     try {
-        const res = await client.query(query, values);
-        console.log('Inserted row:', res.rows[0]);
+        const res = await pool.query(query, values);
     } catch (err) {
-        console.error('Error inserting data:', err);
-    } finally {
-        await client.end();
+        console.error(`Error inserting data into ${tableName}:`, err);
     }
+
     return data.id;
 }

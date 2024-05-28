@@ -18,6 +18,7 @@ CREATE TABLE "keys" (
 );
 
 CREATE TABLE "value" (
+  "id" uuid PRIMARY KEY,
   "keys_id" uuid,
   "rows_id" uuid,
   "value" varchar
